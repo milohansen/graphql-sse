@@ -175,6 +175,7 @@ export interface Client {
   subscribe<Data = Record<string, unknown>, Extensions = unknown>(
     request: RequestParams,
     sink: Sink<ExecutionResult<Data, Extensions>>,
+    onNonFatalError?: (e: unknown) => void,
   ): () => void;
   /**
    * Dispose of the client, destroy connections and clean up resources.
@@ -380,7 +381,7 @@ export function createClient<SingleConnection extends boolean = false>(
   }
 
   return {
-    subscribe(request, sink) {
+    subscribe(request, sink, onNonFatalError?: (e: unknown) => void) {
       if (!singleConnection) {
         // distinct connections mode
 
@@ -397,6 +398,8 @@ export function createClient<SingleConnection extends boolean = false>(
           for (;;) {
             try {
               if (retryingErr) {
+                console.log('retry');
+                onNonFatalError?.(retryingErr);
                 await retry(retries);
 
                 // connection might've been aborted while waiting for retry
@@ -449,6 +452,7 @@ export function createClient<SingleConnection extends boolean = false>(
 
               // try again
               retryingErr = err;
+              onNonFatalError?.(err);
             }
           }
         })()
@@ -537,6 +541,7 @@ export function createClient<SingleConnection extends boolean = false>(
             if (!retryAttempts || retries >= retryAttempts) throw err;
 
             // try again
+            onNonFatalError?.(err);
             retryingErr = err;
           } finally {
             // release lock if subscription is aborted

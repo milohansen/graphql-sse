@@ -46,7 +46,7 @@ export interface TServer {
 }
 
 export async function startTServer(
-  options: Partial<HandlerOptions> = {},
+  options: Partial<HandlerOptions<unknown>> = {},
 ): Promise<TServer> {
   const emitter = new EventEmitter();
 
