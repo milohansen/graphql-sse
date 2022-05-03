@@ -13,13 +13,14 @@ import {
   ExecutionResult,
   ExecutionPatchResult,
   TOKEN_HEADER_KEY,
+  StreamEvent,
 } from './common';
 
 /** This file is the entry point for browsers, re-export common elements. */
 export * from './common';
 
 /** @category Client */
-export interface ClientOptions {
+export interface ClientOptions<SingleConnection extends boolean = false> {
   /**
    * Reuses a single SSE connection for all GraphQL operations.
    *
@@ -34,7 +35,7 @@ export interface ClientOptions {
    *
    * @default false
    */
-  singleConnection?: boolean;
+  singleConnection?: SingleConnection;
   /**
    * Controls when should the connection be established while using the
    * client in "single connection mode" (see `singleConnection ` option).
@@ -47,7 +48,7 @@ export interface ClientOptions {
    *
    * @default true
    */
-  lazy?: boolean;
+  lazy?: SingleConnection extends true ? boolean : never;
   /**
    * How long should the client wait before closing the connection after the last oparation has
    * completed. You might want to have a calmdown time before actually closing the connection.
@@ -59,7 +60,7 @@ export interface ClientOptions {
    *
    * @default 0
    */
-  lazyCloseTimeout?: number;
+  lazyCloseTimeout?: SingleConnection extends true ? number : never;
   /**
    * Used ONLY when the client is in non-lazy mode (`lazy = false`). When
    * using this mode, errors might have no sinks to report to; however,
@@ -71,7 +72,9 @@ export interface ClientOptions {
    *
    * @default console.error
    */
-  onNonLazyError?: (error: unknown) => void;
+  onNonLazyError?: SingleConnection extends true
+    ? (error: unknown) => void
+    : never;
   /**
    * URL of the GraphQL over SSE server to connect.
    *
@@ -152,6 +155,13 @@ export interface ClientOptions {
    * @default 'Randomised exponential backoff, 5 times'
    */
   retry?: (retries: number) => Promise<void>;
+  /**
+   * Browsers show stream messages in the DevTools **only** if they're received through the [native EventSource](https://developer.mozilla.org/en-US/docs/Web/API/EventSource),
+   * and because `graphql-sse` implements a custom SSE parser - received messages will **not** appear in browser's DevTools.
+   *
+   * Use this function if you want to inspect valid messages received through the active SSE connection.
+   */
+  onMessage?: (message: StreamMessage<SingleConnection, StreamEvent>) => void;
 }
 
 /** @category Client */
@@ -186,7 +196,9 @@ export interface Client {
  *
  * @category Client
  */
-export function createClient(options: ClientOptions): Client {
+export function createClient<SingleConnection extends boolean = false>(
+  options: ClientOptions<SingleConnection>,
+): Client {
   const {
     singleConnection = false,
     lazy = true,
@@ -222,6 +234,7 @@ export function createClient(options: ClientOptions): Client {
       );
     },
     credentials = 'same-origin',
+    onMessage,
   } = options;
   const fetchFn = (options.fetchFn || fetch) as typeof fetch;
   const AbortControllerImpl = (options.abortControllerImpl ||
@@ -325,6 +338,7 @@ export function createClient(options: ClientOptions): Client {
             credentials,
             url,
             fetchFn,
+            onMessage,
           });
           retryingErr = null; // future connects are not retries
           retries = 0; // reset the retries on connect
@@ -413,6 +427,7 @@ export function createClient(options: ClientOptions): Client {
                 url,
                 body: JSON.stringify(request),
                 fetchFn,
+                onMessage,
               });
               retryingErr = null; // future connects are not retries
               retries = 0; // reset the retries on connect
@@ -619,17 +634,23 @@ interface Connection {
   }) => AsyncIterable<ExecutionResult | ExecutionPatchResult>;
 }
 
-interface ConnectOptions {
+interface ConnectOptions<SingleConnection extends boolean> {
   signal: AbortSignal;
   url: string;
   credentials: 'omit' | 'same-origin' | 'include';
   headers?: Record<string, string> | undefined;
   body?: string;
   fetchFn: typeof fetch;
+  onMessage:
+    | ((message: StreamMessage<SingleConnection, StreamEvent>) => void)
+    | undefined;
 }
 
-async function connect(options: ConnectOptions): Promise<Connection> {
-  const { signal, url, credentials, headers, body, fetchFn } = options;
+async function connect<SingleConnection extends boolean>(
+  options: ConnectOptions<SingleConnection>,
+): Promise<Connection> {
+  const { signal, url, credentials, headers, body, fetchFn, onMessage } =
+    options;
 
   const waiting: {
     [id: string]: { proceed: () => void };
@@ -660,7 +681,7 @@ async function connect(options: ConnectOptions): Promise<Connection> {
   let waitingForThrow: ((error: unknown) => void) | null = null;
   (async () => {
     try {
-      const parse = createParser();
+      const parse = createParser<SingleConnection>();
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       for await (const chunk of toAsyncIterator(res.body!)) {
@@ -672,6 +693,8 @@ async function connect(options: ConnectOptions): Promise<Connection> {
         if (!msgs) continue;
 
         for (const msg of msgs) {
+          onMessage?.(msg);
+
           const operationId =
             msg.data && 'id' in msg.data
               ? msg.data.id // StreamDataForID

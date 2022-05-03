@@ -45,7 +45,7 @@ graphql-sse
 
 ### createClient
 
-▸ **createClient**(`options`): [`Client`](interfaces/Client.md)
+▸ **createClient**<`SingleConnection`\>(`options`): [`Client`](interfaces/Client.md)
 
 Creates a disposable GraphQL over SSE client to transmit
 GraphQL operation results.
@@ -58,11 +58,17 @@ However, when dealing with HTTP/1 servers from a browser, consider using
 the "single connection mode" (`singleConnection = true`) which will
 use only one SSE connection.
 
+#### Type parameters
+
+| Name | Type |
+| :------ | :------ |
+| `SingleConnection` | extends `boolean` = ``false`` |
+
 #### Parameters
 
 | Name | Type |
 | :------ | :------ |
-| `options` | [`ClientOptions`](interfaces/ClientOptions.md) |
+| `options` | [`ClientOptions`](interfaces/ClientOptions.md)<`SingleConnection`\> |
 
 #### Returns
 
@@ -78,7 +84,7 @@ use only one SSE connection.
 
 | Name | Type |
 | :------ | :------ |
-| `E` | extends [`StreamEvent`](README.md#streamevent) = [`StreamEvent`](README.md#streamevent) |
+| `E` | extends [`StreamEvent`](README.md#streamevent) |
 
 ___
 
@@ -90,7 +96,7 @@ ___
 
 | Name | Type |
 | :------ | :------ |
-| `E` | extends [`StreamEvent`](README.md#streamevent) = [`StreamEvent`](README.md#streamevent) |
+| `E` | extends [`StreamEvent`](README.md#streamevent) |
 
 ___
 
@@ -124,18 +130,25 @@ ___
 
 ### parseStreamData
 
-▸ **parseStreamData**(`e`, `data`): [`StreamData`](README.md#streamdata)
+▸ **parseStreamData**<`ForID`, `E`\>(`e`, `data`): `ForID` extends ``true`` ? [`StreamDataForID`](README.md#streamdataforid)<`E`\> : [`StreamData`](README.md#streamdata)<`E`\>
+
+#### Type parameters
+
+| Name | Type |
+| :------ | :------ |
+| `ForID` | extends `boolean` |
+| `E` | extends [`StreamEvent`](README.md#streamevent) |
 
 #### Parameters
 
 | Name | Type |
 | :------ | :------ |
-| `e` | [`StreamEvent`](README.md#streamevent) |
+| `e` | `E` |
 | `data` | `string` |
 
 #### Returns
 
-[`StreamData`](README.md#streamdata)
+`ForID` extends ``true`` ? [`StreamDataForID`](README.md#streamdataforid)<`E`\> : [`StreamData`](README.md#streamdata)<`E`\>
 
 ___
 
@@ -161,9 +174,9 @@ ___
 
 #### Type parameters
 
-| Name | Type |
-| :------ | :------ |
-| `T` | `unknown` |
+| Name |
+| :------ |
+| `T` |
 
 #### Parameters
 
