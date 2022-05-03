@@ -58,11 +58,19 @@ export type OperationResult =
   | AsyncIterable<ExecutionResult | ExecutionPatchResult>
   | ExecutionResult;
 
+type ExecutionArgsWithContext<Context> =
+  Context extends NonNullable<ExecutionContext>
+    ? Omit<ExecutionArgs, 'contextValue'> & {
+        contextValue: Context;
+      }
+    : ExecutionArgs;
+
 /** @category Server */
-export interface HandlerOptions<
+export type HandlerOptions<
+  Context,
   Request extends IncomingMessage = IncomingMessage,
   Response extends ServerResponse = ServerResponse,
-> {
+> = {
   /**
    * The GraphQL schema on which the operations will
    * be executed and validated against.
@@ -79,7 +87,10 @@ export interface HandlerOptions<
     | GraphQLSchema
     | ((
         req: Request,
-        args: Omit<ExecutionArgs, 'schema'>,
+        args: Pick<
+          ExecutionArgs,
+          'operationName' | 'document' | 'variableValues'
+        >,
       ) => Promise<GraphQLSchema> | GraphQLSchema);
   /**
    * A value which is provided to every resolver and holds
@@ -92,11 +103,13 @@ export interface HandlerOptions<
    * in subscriptions here: https://github.com/graphql/graphql-js/issues/894.
    */
   context?:
-    | ExecutionContext
+    | Context
     | ((
         req: Request,
-        args: ExecutionArgs,
-      ) => Promise<ExecutionContext> | ExecutionContext);
+        args: Omit<ExecutionArgs, 'contextValue'>,
+      ) => Promise<Context> | Context);
+
+  exec?: (args: ExecutionArgsWithContext<Context>) => void;
   /**
    * A custom GraphQL validate function allowing you to apply your
    * own validation rules.
@@ -106,12 +119,12 @@ export interface HandlerOptions<
    * Is the `execute` function from GraphQL which is
    * used to execute the query and mutation operations.
    */
-  execute?: (args: ExecutionArgs) => OperationResult;
+  execute?: (args: ExecutionArgsWithContext<Context>) => OperationResult;
   /**
    * Is the `subscribe` function from GraphQL which is
    * used to execute the subscription operation.
    */
-  subscribe?: (args: ExecutionArgs) => OperationResult;
+  subscribe?: (args: ExecutionArgsWithContext<Context>) => OperationResult;
   /**
    * Authenticate the client. Returning a string indicates that the client
    * is authenticated and the request is ready to be processed.
@@ -167,7 +180,10 @@ export interface HandlerOptions<
     req: Request,
     res: Response,
     params: RequestParams,
-  ) => Promise<ExecutionArgs | void> | ExecutionArgs | void;
+  ) =>
+    | Promise<ExecutionArgsWithContext<Context> | void>
+    | ExecutionArgsWithContext<Context>
+    | void;
   /**
    * Executed after the operation call resolves. For streaming
    * operations, triggering this callback does not necessarely
@@ -191,7 +207,7 @@ export interface HandlerOptions<
   onOperation?: (
     req: Request,
     res: Response,
-    args: ExecutionArgs,
+    args: ExecutionArgsWithContext<Context>,
     result: OperationResult,
   ) => Promise<OperationResult | void> | OperationResult | void;
   /**
@@ -209,7 +225,7 @@ export interface HandlerOptions<
    */
   onNext?: (
     req: Request,
-    args: ExecutionArgs,
+    args: ExecutionArgsWithContext<Context>,
     result: ExecutionResult | ExecutionPatchResult,
   ) =>
     | Promise<ExecutionResult | ExecutionPatchResult | void>
@@ -227,13 +243,16 @@ export interface HandlerOptions<
    * First argument, the request, is always the GraphQL operation
    * request.
    */
-  onComplete?: (req: Request, args: ExecutionArgs) => Promise<void> | void;
+  onComplete?: (
+    req: Request,
+    args: ExecutionArgsWithContext<Context>,
+  ) => Promise<void> | void;
   /**
    * Called when an event stream has disconnected right before the
    * accepting the stream.
    */
   onDisconnect?: (req: Request) => Promise<void> | void;
-}
+};
 
 /**
  * The ready-to-use handler. Simply plug it in your favourite HTTP framework
@@ -287,6 +306,7 @@ export type Handler<
 interface Stream<
   Request extends IncomingMessage = IncomingMessage,
   Response extends ServerResponse = ServerResponse,
+  Context = ExecutionContext,
 > {
   /**
    * Does the stream have an open connection to some client.
@@ -308,7 +328,7 @@ interface Stream<
    */
   from(
     operationReq: Request, // holding the operation request (not necessarily the event stream)
-    args: ExecutionArgs,
+    args: ExecutionArgsWithContext<Context>,
     result:
       | AsyncGenerator<ExecutionResult | ExecutionPatchResult>
       | AsyncIterable<ExecutionResult | ExecutionPatchResult>
@@ -327,9 +347,12 @@ interface Stream<
  * @category Server
  */
 export function createHandler<
+  Context,
   Request extends IncomingMessage = IncomingMessage,
   Response extends ServerResponse = ServerResponse,
->(options: HandlerOptions<Request, Response>): Handler<Request, Response> {
+>(
+  options: HandlerOptions<Context, Request, Response>,
+): Handler<Request, Response> {
   const {
     schema,
     context,
@@ -363,9 +386,11 @@ export function createHandler<
     onDisconnect,
   } = options;
 
-  const streams: Record<string, Stream> = {};
+  const streams: Record<string, Stream<Request, Response, Context>> = {};
 
-  function createStream(token: string | null): Stream<Request, Response> {
+  function createStream(
+    token: string | null,
+  ): Stream<Request, Response, Context> {
     let request: Request | null = null,
       response: Response | null = null,
       pinger: ReturnType<typeof setInterval>,
@@ -511,8 +536,11 @@ export function createHandler<
     req: Request,
     res: Response,
     params: RequestParams,
-  ): Promise<[args: ExecutionArgs, perform: () => OperationResult] | void> {
-    let args: ExecutionArgs, operation: OperationTypeNode;
+  ): Promise<
+    | [args: ExecutionArgsWithContext<Context>, perform: () => OperationResult]
+    | void
+  > {
+    let args: ExecutionArgsWithContext<Context>, operation: OperationTypeNode;
 
     const maybeExecArgs = await onSubscribe?.(req, res, params);
     if (maybeExecArgs) args = maybeExecArgs;
@@ -544,7 +572,8 @@ export function createHandler<
           typeof schema === 'function'
             ? await schema(req, argsWithoutSchema)
             : schema,
-      };
+        // context value will be assigned below
+      } as ExecutionArgsWithContext<Context>;
     }
 
     try {
@@ -567,9 +596,13 @@ export function createHandler<
       return;
     }
 
-    if (!('contextValue' in args))
-      args.contextValue =
-        typeof context === 'function' ? await context(req, args) : context;
+    if (!('contextValue' in args)) {
+      if (context instanceof Function) {
+        args.contextValue = await context(req, args);
+      } else {
+        args.contextValue = context;
+      }
+    }
 
     // we validate after injecting the context because the process of
     // reporting the validation errors might need the supplied context value
@@ -792,6 +825,28 @@ export function createHandler<
     await stream.from(req, args, result, opId);
   };
 }
+
+// function create<Ctx>(options: HandlerOptions<Ctx>): Ctx {
+//   return {} as any;
+// }
+// const out = create({
+//   context: async () => {
+//     return { foo: 'foo' };
+//   },
+//   exec: (args) => {
+//     args.contextValue;
+//     console.log('exec');
+//   },
+// });
+
+// const handlerTest = createHandler({
+//   context: async () => {
+//     return { foo: 'foo' };
+//   },
+//   exec: (args) => {
+//     args.contextValue;
+//   },
+// });
 
 async function parseReq<Request extends IncomingMessage = IncomingMessage>(
   req: Request,
